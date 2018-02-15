@@ -53,7 +53,7 @@ let _ =
 *)
 let rec eval s e =
     let btoi b = if b then 1 else 0
-    and itob i = if (i != 0) then true else false
+    and itob i = i != 0
     in
     match e with
     | Const c -> c
@@ -64,8 +64,8 @@ let rec eval s e =
         and op = (match opstring with
         | "!!" -> fun l r -> btoi (itob l || itob r)
         | "&&" -> fun l r -> btoi (itob l && itob r)
-        | "==" -> fun l r -> btoi (l == r)
-        | "!=" -> fun l r -> btoi (l != r)
+        | "==" -> fun l r -> btoi (l =  r)
+        | "!=" -> fun l r -> btoi (l <> r)
         | "<=" -> fun l r -> btoi (l <= r)
         | "<"  -> fun l r -> btoi (l <  r)
         | ">=" -> fun l r -> btoi (l >= r)
