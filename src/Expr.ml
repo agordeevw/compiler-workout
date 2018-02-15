@@ -35,12 +35,14 @@ let update x v s = fun y -> if x = y then v else s y
 let s = update "x" 1 @@ update "y" 2 @@ update "z" 3 @@ update "t" 4 empty
 
 (* Some testing; comment this definition out when submitting the solution. *)
+(*
 let _ =
   List.iter
     (fun x ->
        try  Printf.printf "%s=%d\n" x @@ s x
        with Failure s -> Printf.printf "%s\n" s
     ) ["x"; "a"; "y"; "z"; "t"; "b"]
+*)
 
 (* Expression evaluator
 
@@ -49,5 +51,31 @@ let _ =
    Takes a state and an expression, andreturns the value of the expression in 
    the given state.
 *)
-let eval = failwith "Not implemented yet"
-                    
+let rec eval s e =
+    let btoi b = if b then 1 else 0
+    and itob i = if (i != 0) then true else false
+    in
+    match e with
+    | Const c -> c
+    | Var v   -> s v
+    | Binop (opstring, lhs, rhs) ->
+        let lhsval = eval s lhs
+        and rhsval = eval s rhs
+        and op = (match opstring with
+        | "!!" -> fun l r -> btoi (itob l || itob r)
+        | "&&" -> fun l r -> btoi (itob l && itob r)
+        | "==" -> fun l r -> btoi (l == r)
+        | "!=" -> fun l r -> btoi (l != r)
+        | "<=" -> fun l r -> btoi (l <= r)
+        | "<"  -> fun l r -> btoi (l <  r)
+        | ">=" -> fun l r -> btoi (l >= r)
+        | ">"  -> fun l r -> btoi (l >  r)
+        | "+"  -> ( + )
+        | "-"  -> ( - )
+        | "*"  -> ( * )
+        | "/"  -> ( / )
+        | "%"  -> ( mod )
+        | _    -> failwith "Not an operator"
+        )
+        in op lhsval rhsval
+        
