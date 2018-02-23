@@ -66,4 +66,15 @@ let eval (_stack, (_state, _istream, _ostream)) prg =
    stack machine
  *)
 
-let compile _ = failwith "Not yet implemented"
+let rec exprcompile expr =
+  match expr with
+  | Syntax.Expr.Const value -> [CONST value]
+  | Syntax.Expr.Var varname -> [LD varname]
+  | Syntax.Expr.Binop (opname, lhs, rhs) -> (exprcompile lhs) @ (exprcompile rhs) @ [BINOP opname]
+
+let rec compile stmt = 
+  match stmt with
+  | Syntax.Stmt.Assign (varname, expr) -> (exprcompile expr) @ [ST varname]
+  | Syntax.Stmt.Read varname -> [READ; ST varname]
+  | Syntax.Stmt.Write expr -> (exprcompile expr) @ [WRITE]
+  | Syntax.Stmt.Seq (lstmt, rstmt) -> (compile lstmt) @ (compile rstmt)
