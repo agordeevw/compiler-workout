@@ -22,8 +22,41 @@ type config = int list * Syntax.Stmt.config
      val eval : config -> prg -> config
 
    Takes a configuration and a program, and returns a configuration as a result
- *)                         
-let eval _ = failwith "Not yet implemented"
+ *)                      
+let eval (_stack, (_state, _istream, _ostream)) prg = 
+  let _stmtcfg = (_state, _istream, _ostream)
+  in match prg with
+  | [] -> (_stack, _stmtcfg)
+  | _insn :: _  -> (
+    match _insn with
+    | BINOP opname -> (
+      match _stack with
+      | y :: x :: tail_stack -> ((Syntax.Expr.binop opname x y) :: tail_stack, _stmtcfg)
+      | _ -> failwith ("BINOP failure: Not enough arguments, expected 2")
+    )
+    | CONST value -> (
+      (value :: _stack, _stmtcfg)
+    )
+    | READ -> (
+      match _istream with
+      | value :: tail_istream -> (value :: _stack, (_state, tail_istream, _ostream))
+      | _ -> failwith ("READ failure: empty istream")
+    )
+    | WRITE -> (
+      match _stack with
+      | value :: tail_stack -> (tail_stack, (_state, _istream, _ostream @ [value]))
+      | _ -> failwith ("WRITE failure: empty stack")
+    )
+    | LD varname -> (
+      ((_state varname) :: _stack, _stmtcfg)
+    )
+    | ST varname -> (
+      match _stack with
+      | value :: tail_stack -> (tail_stack, (Syntax.Expr.update varname value _state, _istream, _ostream))
+      | _ -> failwith ("ST failure: empty stack")
+    )
+  )
+  
 
 (* Stack machine compiler
 
