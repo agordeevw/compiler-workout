@@ -34,6 +34,30 @@ module Expr =
     *)
     let update x v s = fun y -> if x = y then v else s y
 
+    (* Generate binary operator from operator string description. *)
+    let binop opstring =
+      let bool_to_int b = if b then 1 else 0 
+      and int_to_bool i = i != 0
+      in (
+        let boolbinop = fun boolop l r -> bool_to_int (boolop (int_to_bool l) (int_to_bool r))
+        and compbinop = fun compop l r -> bool_to_int (compop l r)
+        in match opstring with
+          | "!!" -> boolbinop (||)
+          | "&&" -> boolbinop (&&)
+          | "==" -> compbinop (= )
+          | "!=" -> compbinop (<>)
+          | "<=" -> compbinop (<=)
+          | "<"  -> compbinop (< )
+          | ">=" -> compbinop (>=)
+          | ">"  -> compbinop (> )
+          | "+"  -> ( + )
+          | "-"  -> ( - )
+          | "*"  -> ( * )
+          | "/"  -> ( / )
+          | "%"  -> ( mod )
+          | _    -> failwith "Not an operator"
+        )
+
     (* Expression evaluator
 
           val eval : state -> t -> int
@@ -42,36 +66,13 @@ module Expr =
        the given state.
     *)
     let rec eval _state _expr =
-    let bool_to_int b = if b then 1 else 0
-    and int_to_bool i = i != 0
-    in
     match _expr with
     | Const value -> value
     | Var   name  -> _state name
     | Binop (opstring, lhs, rhs) ->
         let lhsvalue = eval _state lhs
         and rhsvalue = eval _state rhs
-        and op = (
-          let boolfunc = fun boolop l r -> bool_to_int (boolop (int_to_bool l) (int_to_bool r))
-          and compfunc = fun compop l r -> bool_to_int (compop l r)
-          in match opstring with
-            | "!!" -> boolfunc (||)
-            | "&&" -> boolfunc (&&)
-            | "==" -> compfunc (= )
-            | "!=" -> compfunc (<>)
-            | "<=" -> compfunc (<=)
-            | "<"  -> compfunc (< )
-            | ">=" -> compfunc (>=)
-            | ">"  -> compfunc (> )
-            | "+"  -> ( + )
-            | "-"  -> ( - )
-            | "*"  -> ( * )
-            | "/"  -> ( / )
-            | "%"  -> ( mod )
-            | _    -> failwith "Not an operator"
-            )
-        in op lhsvalue rhsvalue
-        
+        in binop opstring lhsvalue rhsvalue
 
   end
                     
