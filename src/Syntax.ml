@@ -41,7 +41,37 @@ module Expr =
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
     *)
-    let eval _ = failwith "Not implemented yet"
+    let rec eval _state _expr =
+    let bool_to_int b = if b then 1 else 0
+    and int_to_bool i = i != 0
+    in
+    match _expr with
+    | Const value -> value
+    | Var   name  -> _state name
+    | Binop (opstring, lhs, rhs) ->
+        let lhsvalue = eval _state lhs
+        and rhsvalue = eval _state rhs
+        and op = (
+          let boolfunc = fun boolop l r -> bool_to_int (boolop (int_to_bool l) (int_to_bool r))
+          and compfunc = fun compop l r -> bool_to_int (compop l r)
+          in match opstring with
+            | "!!" -> boolfunc (||)
+            | "&&" -> boolfunc (&&)
+            | "==" -> compfunc (= )
+            | "!=" -> compfunc (<>)
+            | "<=" -> compfunc (<=)
+            | "<"  -> compfunc (< )
+            | ">=" -> compfunc (>=)
+            | ">"  -> compfunc (> )
+            | "+"  -> ( + )
+            | "-"  -> ( - )
+            | "*"  -> ( * )
+            | "/"  -> ( / )
+            | "%"  -> ( mod )
+            | _    -> failwith "Not an operator"
+            )
+        in op lhsvalue rhsvalue
+        
 
   end
                     
@@ -65,6 +95,23 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let eval _ = failwith "Not implemented yet"
+    let rec eval (state, istream, ostream) stmt =
+    match stmt with
+    | Assign (varname, expression) -> 
+        let new_state = Expr.update varname (Expr.eval state expression) state
+        in (new_state, istream, ostream)
+    | Read varname -> (
+        match istream with
+        | value :: tail_istream ->
+            let new_state = Expr.update varname value state
+            in (new_state, tail_istream, ostream)
+        | [] -> failwith("Empty input stream")
+        )
+    | Write expression ->
+        let value = Expr.eval state expression
+        in (state, istream, ostream @ [value])
+    | Seq (fst_stmt, snd_stmt) ->
+        let fst_state = eval (state, istream, ostream) fst_stmt
+        in eval fst_state snd_stmt
                                                          
   end
