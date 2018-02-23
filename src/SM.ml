@@ -23,12 +23,10 @@ type config = int list * Syntax.Stmt.config
 
    Takes a configuration and a program, and returns a configuration as a result
  *)                      
-let eval (_stack, (_state, _istream, _ostream)) prg = 
-  let _stmtcfg = (_state, _istream, _ostream)
-  in match prg with
-  | [] -> (_stack, _stmtcfg)
-  | _insn :: _  -> (
-    match _insn with
+let rec eval cfg prg = 
+  let run_insn (_stack, (_state, _istream, _ostream)) insn = (
+    let _stmtcfg = (_state, _istream, _ostream)
+    in match insn with
     | BINOP opname -> (
       match _stack with
       | y :: x :: tail_stack -> ((Syntax.Expr.binop opname x y) :: tail_stack, _stmtcfg)
@@ -56,6 +54,9 @@ let eval (_stack, (_state, _istream, _ostream)) prg =
       | _ -> failwith ("ST failure: empty stack")
     )
   )
+  in match prg with
+  | [] -> cfg
+  | _insn :: tail_prg -> eval (run_insn cfg _insn) tail_prg
   
 
 (* Stack machine compiler
