@@ -77,6 +77,11 @@ module Expr =
         and rhsvalue = eval _state rhs
         in binop opstring lhsvalue rhsvalue
 
+    let binop_specifiers opstringlist = 
+    List.map 
+    (fun s -> (ostap ($(s)), fun l r -> Binop(s, l, r)))
+    opstringlist
+
     (* Expression parser. You can use the following terminals:
 
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
@@ -84,7 +89,23 @@ module Expr =
    
     *)
     ostap (
-      parse: empty {failwith "Not implemented yet"}
+      parse: 
+        !(Ostap.Util.expr
+        (fun x -> x)
+        [|
+          `Lefta, binop_specifiers ["!!"];
+          `Lefta, binop_specifiers ["&&"];
+          `Nona,  binop_specifiers ["=="; "!="; "<="; "<"; ">="; ">" ];
+          `Lefta, binop_specifiers ["+"; "-"];
+          `Lefta, binop_specifiers ["*"; "/"; "%"] 
+        |]
+        base
+      );
+      
+      base: 
+        c:DECIMAL {Const c} 
+      | x:IDENT {Var x} 
+      | -"(" parse -")"
     )
 
   end
@@ -130,7 +151,17 @@ module Stmt =
 
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented yet"}
+      expr: 
+        !(Expr.parse);
+
+      stmt:
+        -"read" -"(" x:IDENT -")" {Read x}
+      | -"write" -"(" e:expr -")" {Write e}
+      | x:IDENT -":=" e:expr {Assign (x, e)};
+
+      parse:
+        <s::ss> : !(Ostap.Util.listBy)[ostap (";")][stmt] 
+          {List.fold_left (fun l r -> Seq(l, r)) s ss}
     )
       
   end
