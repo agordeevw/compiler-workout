@@ -105,7 +105,7 @@ let compile_step (env, ilist) insn = match insn with
     | "!!" -> [
       Push eax; Push edx;
       Mov (x, edx); Binop("^", eax, eax);
-      Binop("!!", y, edx); Set("ne", "%al"); Mov(eax, ret);
+      Binop("!!", y, edx); Binop("cmp", edx, eax); Set("ne", "%al"); Mov(eax, ret);
       Pop edx; Pop eax]
     | "&&" -> [
       Push eax; Push edx; Push edi;
