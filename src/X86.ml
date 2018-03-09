@@ -73,6 +73,105 @@ let show instr =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
+(* Symbolic stack machine one-step evaluation
+    
+    compile_step: env * instr list -> SM.insn -> env * instr list
+
+  Takes a pair of environment and current list of x86 instructions, stack machine instruction
+    and returns a pair of updated environment and extended list of x86 instructions
+*)
+let compile_step (env, ilist) insn = match insn with
+| BINOP op ->
+  let x, y, env' = env#pop2
+  in
+  let ret, env'' = env'#allocate
+  in
+  let suff op = match op with
+  | "<"  -> "l"
+  | "<=" -> "le"
+  | ">"  -> "g"
+  | ">=" -> "ge"
+  | "==" -> "e"
+  | "!=" -> "ne"
+  | _    -> failwith "Unexpected set operation suffix"
+  in
+  let comparison_ilist op = [
+    Push edi; Push eax;
+    Mov (x, edi); Binop("^", eax, eax);
+    Binop("cmp", edi, y); Set(suff op, "%al"); Mov(eax, ret);
+    Pop eax; Pop edi]
+  in 
+  let boolean_ilist op = match op with
+    | "!!" -> [
+      Push eax; Push edx;
+      Mov (x, edx); Binop("^", eax, eax);
+      Binop("!!", y, edx); Set("ne", "%al"); Mov(eax, ret);
+      Pop edx; Pop eax]
+    | "&&" -> [
+      Push eax; Push edx; Push edi;
+      Binop("^", edi, edi); Binop("^", eax, eax); Binop("^", edx, edx);
+      Binop("cmp", edi, x); Set("ne", "%al");
+      Binop("cmp", edi, y); Set("ne", "%dl");
+      Binop("&&", eax, edx); Binop("cmp", edi, edx); Mov(edx, ret);
+      Pop edi; Pop edx; Pop eax]
+    | _    -> failwith "Unexpected boolean operator"
+  in 
+  let simple_arithmetic_ilist op = [
+    Push edi; Mov (x, edi); Push edx; Mov (y, edx); 
+    Binop(op, edi, edx); Mov (edx, ret); 
+    Pop edx; Pop edi]
+  in
+  let division_ilist op = match op with
+  | "/" -> [Binop("^", edx, edx); Mov (y, eax); Cltd; IDiv x; Mov (eax, ret)]
+  | "%" -> [Binop("^", edx, edx); Mov (y, eax); Cltd; IDiv x; Mov (edx, ret)]
+  | _   -> failwith "Unexpected division operator"
+  in 
+  let make_ilist_from op = match op with
+  | "/" | "%" 
+    -> division_ilist op
+  | "<" | "<="| ">" | ">=" | "==" | "!=" 
+    -> comparison_ilist op
+  | "&&" | "!!" 
+    -> boolean_ilist op
+  | "+" | "-" | "*" 
+    -> simple_arithmetic_ilist op
+  | _ 
+    -> failwith "Unexpected operator"
+  in
+  env'', ilist @ make_ilist_from op
+| READ ->
+  let x, env' = env#allocate
+  in 
+  env', ilist @ [Push ecx; Call "Lread"; Pop ecx; Mov (eax, x)]
+| WRITE ->
+  let x, env' = env#pop
+  in
+  env', ilist @ [Push ecx; Mov (x, ecx); Push ecx; Call "Lwrite"; Pop ecx; Pop ecx]
+| CONST c ->
+  let x, env' = env#allocate
+  in 
+  env', ilist @ [Mov (L c, x)]
+| LD x ->
+  let locx = env#loc x
+  in
+  let z, env' = env#allocate
+  in (
+    match z with 
+    | S _ -> env', ilist @ [Push eax; Mov (M locx, eax); Mov (eax, z); Pop eax]
+    | _   -> env', ilist @ [Mov (M locx, z)]
+  )
+| ST x ->
+  let y, env' = env#pop
+  in 
+  let env'' = env#global x
+  in
+  let locx = env''#loc x
+  in (
+    match y with
+    | S _ -> env'', ilist @ [Push eax; Mov (y, eax); Mov (eax, M locx); Pop eax]
+    | _   -> env'', ilist @ [Mov (y, M locx)]
+  )
+
 (* Symbolic stack machine evaluator
 
      compile : env -> prg -> env * instr list
@@ -80,7 +179,8 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not yet implemented"
+let compile env code = 
+  List.fold_left compile_step (env, []) code
 
 (* A set of strings *)           
 module S = Set.Make (String)
@@ -99,10 +199,12 @@ class env =
     method allocate =    
       let x, n =
 	let rec allocate' = function
-	| []                            -> ebx     , 0
-	| (S n)::_                      -> S (n+1) , n+1
-	| (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-	| _                             -> S 0     , 1
+	| []                               -> ebx     , 0
+  (* S n is allocated -> n+1 stack positions already allocated *)
+	| (S n)::_                         -> S (n+1) , n+2
+  (* Not allowed to allocate R num_of_regs*)
+	| (R n)::_ when n+1 < num_of_regs  -> R (n+1) , stack_slots
+	| _                                -> S 0     , 1
 	in
 	allocate' stack
       in
