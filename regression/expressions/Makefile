@@ -13,3 +13,4 @@ $(TESTS): %: %.expr
 
 clean:
 	rm -f *.log *.s *~ $(TESTS)
+	ls | grep -v "\." | grep -v orig | grep -v Makefile | xargs rm
