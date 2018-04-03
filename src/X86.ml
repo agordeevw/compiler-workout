@@ -86,7 +86,96 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not yet implemented"
+let compile_step (env, ilist) insn = match insn with
+| BINOP op ->
+  let x, y, env1 = env#pop2 in
+  let ret, env2 = env1#allocate in
+  let suff op = match op with
+  | "<"  -> "l"
+  | "<=" -> "le"
+  | ">"  -> "g"
+  | ">=" -> "ge"
+  | "==" -> "e"
+  | "!=" -> "ne"
+  | _    -> failwith "Unexpected set operation suffix"
+  in 
+  let comparison_ilist op = [
+    Mov (x, edx); Binop("^", eax, eax);
+    Binop("cmp", edx, y); Set(suff op, "%al"); Mov(eax, ret)]
+  in 
+  let boolean_ilist op = match op with
+    | "!!" -> [
+      Mov (x, edx); Binop("^", eax, eax);
+      Binop("!!", y, edx); Set("nz", "%al"); Mov(eax, ret)]
+    | "&&" -> [
+      Binop("^", eax, eax); Binop("cmp", eax, x); Set("ne", "%al");
+      Binop("^", edx, edx); Binop("cmp", edx, y); Set("ne", "%dl");
+      Binop("&&", eax, edx); Mov(edx, ret)]
+    | _    -> failwith "Unexpected boolean operator"
+  in 
+  let simple_arithmetic_ilist op = [
+    Mov (y, eax); Binop(op, x, eax); Mov (eax, ret)]
+  in
+  let division_ilist op = match op with
+  | "/" -> [Binop("^", edx, edx); Mov (y, eax); Cltd; IDiv x; Mov (eax, ret)]
+  | "%" -> [Binop("^", edx, edx); Mov (y, eax); Cltd; IDiv x; Mov (edx, ret)]
+  | _   -> failwith "Unexpected division operator"
+  in 
+  let make_ilist_from op = match op with
+  | "/" | "%" 
+    -> division_ilist op
+  | "<" | "<="| ">" | ">=" | "==" | "!=" 
+    -> comparison_ilist op
+  | "&&" | "!!" 
+    -> boolean_ilist op
+  | "+" | "-" | "*" 
+    -> simple_arithmetic_ilist op
+  | _ 
+    -> failwith "Unexpected operator"
+  in
+  env2, ilist @ make_ilist_from op
+| READ ->
+  let x, env1 = env#allocate in 
+  env1, ilist @ [Push ecx; Call "Lread"; Pop ecx; Mov (eax, x)]
+| WRITE ->
+  let x, env1 = env#pop in
+  env1, ilist @ [Push ecx; Mov (x, ecx); Push ecx; Call "Lwrite"; Pop ecx; Pop ecx]
+| CONST c ->
+  let x, env1 = env#allocate in 
+  env1, ilist @ [Mov (L c, x)]
+| LD x ->
+  let locx = env#loc x in
+  let z, env1 = env#allocate in 
+  env1, (
+    match z with 
+    | S _ -> ilist @ [Mov (M locx, eax); Mov (eax, z)]
+    | _   -> ilist @ [Mov (M locx, z)]
+  )
+| ST x ->
+  let y, env1 = env#pop in 
+  let env2 = env1#global x in
+  let locx = env2#loc x in 
+  env2, (
+    match y with
+    | S _ -> ilist @ [Mov (y, eax); Mov (eax, M locx)]
+    | _   -> ilist @ [Mov (y, M locx)]
+  )
+| LABEL l -> env, ilist @ [Label l]
+| JMP l   -> env, ilist @ [Jmp l]
+| CJMP (c, l) ->
+  let x, env1 = env#pop in
+  env1, ilist @ [Binop ("cmp", L 0, x); CJmp (c, l)]
+
+
+(* Symbolic stack machine evaluator
+
+     compile : env -> prg -> env * instr list
+
+   Take an environment, a stack machine program, and return updated environment and list
+   of x86 instructions
+*)
+let compile env code = 
+  List.fold_left compile_step (env, []) code
 
 (* A set of strings *)           
 module S = Set.Make (String)
@@ -105,11 +194,11 @@ class env =
     method allocate =    
       let x, n =
 	let rec allocate' = function
-	| []                            -> ebx     , 0
-	| (S n)::_                      -> S (n+1) , n+1
-	| (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-        | (M _)::s                      -> allocate' s
-	| _                             -> S 0     , 1
+	| []                              -> ebx     , 0
+	| (S n)::_                        -> S (n+1) , n+2
+	| (R n)::_ when n+1 < num_of_regs -> R (n+1) , stack_slots
+  | (M _)::s                        -> allocate' s
+	| _                               -> S 0     , 1
 	in
 	allocate' stack
       in
