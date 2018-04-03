@@ -140,7 +140,7 @@ module Stmt =
       | If     (c, s1, s2)  -> eval conf (if Expr.eval st c = 1 then s1 else s2)
       | While  (c, s)       -> if Expr.eval st c = 1 then eval (eval conf s) (While (c, s)) else conf
       | Repeat (c, s)       -> let (st', i', o') = eval conf s in 
-        (if Expr.eval st' c = 1 then eval (st', i', o') (Repeat (c, s)) else (st', i', o'))
+        (if Expr.eval st' c = 0 then eval (st', i', o') (Repeat (c, s)) else (st', i', o'))
 
     (* Statement parser *)
     let nested_elifs elifs els =
