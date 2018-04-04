@@ -247,9 +247,7 @@ type t = Definition.t list * Stmt.t
 *)
 let eval (defs, body) i =
   let find procname = 
-    match (List.find_opt (fun n, _ -> n = procname) defs) with
-    | Some (_, def) -> def
-    | None -> failwith "Undefined procedure"
+    let _, def = (List.find (fun n, _ -> n = procname) defs) in def
   in let (_, _, o) = Stmt.eval (object method definition = find end) (State.empty, i, []) body 
   in o
                              
