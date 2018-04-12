@@ -31,7 +31,44 @@ type config = (prg * State.t) list * int list * Expr.config
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)                                                  
-let rec eval env ((cstack, stack, ((st, i, o) as c)) as conf) prg = failwith "Not implemented"
+let rec eval env ((cstack, stack, ((st, i, o, r) as c)) as conf) = function
+| [] -> conf
+| insn :: prg' ->
+   eval env
+     (match insn with
+      | BINOP op       -> let y::x::stack' = stack in (cstack, Expr.to_func op x y :: stack', c)
+      | READ           -> let z::i'        = i     in (cstack, z::stack, (st, i', o, None))
+      | WRITE          -> let z::stack'    = stack in (cstack, stack', (st, i, o @ [z], None))
+      | CONST i        -> (cstack, i::stack, c)
+      | LD x           -> (cstack, (State.eval st x) :: stack, c)
+      | ST x           -> let z::stack'    = stack in (cstack, stack', (State.update x z st, i, o, None))
+      | LABEL l        -> conf
+      | JMP l          -> conf
+      | CJMP (cond, l) -> let z::stack'    = stack in (cstack, stack', c)
+      | BEGIN (args, ls) -> 
+        let inner_st = State.enter st (args @ ls) in 
+        let st', stack' = List.fold_left (fun (s, (z :: stck)) x -> State.update x z s, stck) (inner_st, stack) args in
+        (cstack, stack', (st', i, o, None))
+      | END            ->
+        (match cstack with 
+        | [] -> conf
+        | (_, s) :: cstack' -> (cstack', stack, (State.leave st s, i, o, None)) 
+        )
+      | CALL name      -> ((prg', st)::cstack, stack, c)
+     )
+     (let cjmp_cond cond x =
+        match cond with
+        | "z"  -> x = 0
+        | "nz" -> x <> 0
+        | _    -> failwith "Unexpected cjump parameter"
+      in
+        match insn with
+        | JMP l           -> env#labeled l
+        | CJMP (cond, l)  -> let z::stack' = stack in (if cjmp_cond cond z then (env#labeled l) else prg')
+        | CALL name       -> env#labeled name
+        | END             -> (match cstack with [] -> [] | (p, _) :: _ -> p)
+        | _               -> prg'
+     )
 
 (* Top-level evaluation
 
@@ -48,7 +85,7 @@ let run p i =
   | _ :: tl         -> make_map m tl
   in
   let m = make_map M.empty p in
-  let (_, _, (_, _, o)) = eval (object method labeled l = M.find l m end) ([], [], (State.empty, i, [])) p in o
+  let (_, _, (_, _, o, _)) = eval (object method labeled l = M.find l m end) ([], [], (State.empty, i, [], None)) p in o
 
 (* Stack machine compiler
 
@@ -57,4 +94,74 @@ let run p i =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
-let compile (defs, p) = failwith "Not implemented"
+class label_generator = 
+  object (self)
+    val cntr = 2
+    method create = 
+      let str = string_of_int cntr 
+      in ".L"^str, {<cntr = cntr + 1>}
+end
+
+let createfunlabel name argcount = 
+  let argcountstr = string_of_int argcount
+  in name^"("^argcountstr^")"
+
+let rec compile' labgen =
+  let rec expr = function
+  | Expr.Var   x          -> [LD x]
+  | Expr.Const n          -> [CONST n]
+  | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
+  | Expr.Call (name, args)->
+    let compiled_args = List.fold_right (fun e l -> l @ (expr e)) args [] in
+    compiled_args @ [CALL (createfunlabel name (List.length args))]
+  in
+  function
+  | Stmt.Read x        -> labgen, [READ; ST x]
+  | Stmt.Write e       -> labgen, expr e @ [WRITE]
+  | Stmt.Assign (x, e) -> labgen, expr e @ [ST x]
+  | Stmt.Skip          -> labgen, []
+  | Stmt.If (c, s, es) -> 
+      let else_label, labgen = labgen#create in
+      let endif_label, labgen = labgen#create in
+      let labgen, compiled_s = compile' labgen s in
+      let labgen, compiled_es = compile' labgen es in
+      labgen, 
+      expr c @ [CJMP("z", else_label)]
+        @ compiled_s @ [JMP endif_label; LABEL else_label] 
+        @ compiled_es
+        @ [LABEL endif_label]
+  | Stmt.While (c, s)  ->
+      let while_label, labgen = labgen#create in
+      let endwhile_label, labgen = labgen#create in 
+      let labgen, compiled_s = compile' labgen s in
+      labgen,
+      [LABEL while_label] @ expr c @ [CJMP("z", endwhile_label)]
+      @ compiled_s @ [JMP while_label; LABEL endwhile_label]
+  | Stmt.Repeat (s, c) ->
+      let repeat_label, labgen = labgen#create in
+      let labgen, compiled_s = compile' labgen s in
+      labgen,
+      [LABEL repeat_label] @ compiled_s @ (expr c) @ [CJMP("z", repeat_label)]
+  | Stmt.Seq (s1, s2)  -> 
+      let labgen, compiled_s1 = compile' labgen s1 in
+      let labgen, compiled_s2 = compile' labgen s2 in
+      labgen, compiled_s1 @ compiled_s2
+  | Stmt.Call (name, args) ->
+      let compiled_args = List.fold_left (fun ilist arg -> ilist @ (expr arg)) [] args in
+      labgen, compiled_args @ [CALL (createfunlabel name (List.length args))]
+  | Stmt.Return optexpr    ->
+      let compiled_ret = match optexpr with Some e -> expr e | None -> [] in
+      labgen, compiled_ret @ [END]
+
+
+let compile_proc labgen (name, (argnames, locals, body)) = 
+  let labgen, compiled_body = compile' labgen body in
+  labgen, [LABEL (createfunlabel name (List.length argnames)); BEGIN (argnames, locals)] @ compiled_body @ [END]
+
+let compile (defs, p) = 
+  let labgen, compiled_defs = List.fold_left 
+    (fun (lg, ilist) def -> 
+      let (lg', proc_ilist) = compile_proc lg def in (lg', ilist @ proc_ilist))
+    (new label_generator, []) defs in
+  let (_, compiled_s) = compile' labgen p in
+  [JMP "main(0)"] @ compiled_defs @ [LABEL "main(0)"] @ compiled_s
