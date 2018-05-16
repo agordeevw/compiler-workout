@@ -7,6 +7,13 @@ open GT
 open Ostap
 open Combinators
 
+let rec list_init_helper i acc len f = 
+  if i < len
+  then list_init_helper (i+1) (acc @ [f i]) len f
+  else acc
+
+let list_init len f = list_init_helper 0 [] len f
+
 (* Values *)
 module Value =
   struct
@@ -35,7 +42,7 @@ module Value =
     | _ -> failwith "symbolic expression expected"
 
     let update_string s i x = String.init (String.length s) (fun j -> if j = i then x else s.[j])
-    let update_array  a i x = List.init   (List.length a)   (fun j -> if j = i then x else List.nth a j)
+    let update_array  a i x = list_init   (List.length a)   (fun j -> if j = i then x else List.nth a j)
 
   end
        
@@ -185,7 +192,32 @@ module Expr =
       | "!!" -> fun x y -> bti (itb x || itb y)
       | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
     
-    let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
+    let rec eval env ((st, i, o, r) as conf) = function
+    | Const c -> 
+      (st, i, o, Some (Value.of_int c))
+    | Array xs -> 
+      let st', i', o', args = eval_list env conf xs
+      in env#definition env "$array" args (st', i', o', None)
+    | Sexp (s, xs) ->
+      let st', i', o', args = eval_list env conf xs in
+      (st', i', o', Some (Value.sexp s args))
+    | String s -> 
+      (st, i, o, Some (Value.of_string s))
+    | Var v -> 
+      (st, i, o, Some (State.eval st v))
+    | Binop (op, x, y) ->
+      let (_, _, _, Some x') as conf' = eval env conf x in
+      let (st', i', o', Some y') = eval env conf' y in
+      (st', i', o', Some (Value.of_int (to_func op (Value.to_int x') (Value.to_int y'))))
+    | Elem (b, j) ->
+      let (st', i', o', args) = eval_list env conf [b; j]
+      in env#definition env "$elem" args (st', i', o', None)
+    | Length l -> 
+      let (st', i', o', Some r) = eval env conf l
+      in env#definition env "$length" [r] (st', i', o', None)
+    | Call (f, xs) ->
+      let (st', i', o', args) = eval_list env conf xs
+      in env#definition env f args (st', i', o', None)
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
         List.fold_left
@@ -203,8 +235,50 @@ module Expr =
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string                                                                                                                  
     *)
-    ostap (                                      
-      parse: empty {failwith "Not implemented"}
+    ostap (
+      parse:
+      !(Ostap.Util.expr 
+        (fun x -> x)
+        (
+          Array.map (
+            fun (a, s) -> a, 
+            List.map (
+              fun s -> ostap(- $(s)), 
+              (fun x y -> Binop (s, x, y))
+            ) s
+          )
+          [|
+            `Lefta, ["!!"];
+            `Lefta, ["&&"];
+            `Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+            `Lefta, ["+" ; "-"];
+            `Lefta, ["*" ; "/"; "%"];
+          |] 
+        )
+       primary);
+
+      primary:
+        v:primary' "." %"length" {Length v}
+        | primary' ;
+      
+      primary':
+        v:core k:(-"[" parse -"]")*
+        {List.fold_left (fun v' k' -> Elem (v', k')) v k }
+      | core ;
+
+      core:
+        call
+      | n:DECIMAL {Const n}
+      | x:IDENT   {Var x}
+      | c:CHAR    {Const (Char.code c)}
+      | s:STRING  {String (String.sub s 1 @@ String.length s - 2)}
+      | "`" s:IDENT "(" l:!(Util.list parse) ")" {Sexp (s, l)}
+      | "`" s:IDENT                              {Sexp (s, [])}
+      | "[" a:!(Util.list parse) "]" {Array a}
+      | -"(" parse -")";
+
+      call: x:IDENT "(" params:!(Ostap.Util.listBy)[ostap (",")][parse]? ")" 
+        {Call (x, match params with Some s -> s | None -> [])}
     )
     
   end
@@ -226,7 +300,11 @@ module Stmt =
 
         (* Pattern parser *)                                 
         ostap (
-          parse: empty {failwith "Not implemented"}
+          parse:
+            %"_" {Wildcard}
+          | "`" s:IDENT "(" l:!(Util.list parse) ")" {Sexp (s, l)}
+          | "`" s:IDENT {Sexp (s, [])}
+          | s:IDENT {Ident s}
         )
         
         let vars p =
