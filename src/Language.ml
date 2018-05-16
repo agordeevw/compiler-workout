@@ -7,6 +7,13 @@ open GT
 open Ostap
 open Combinators
 
+let rec list_init_helper i acc len f = 
+  if i < len
+  then list_init_helper (i+1) (acc @ [f i]) len f
+  else acc
+
+let list_init len f = list_init_helper 0 [] len f
+
 (* Values *)
 module Value =
   struct
@@ -30,7 +37,7 @@ module Value =
     let of_array  a = Array  a
 
     let update_string s i x = String.init (String.length s) (fun j -> if j = i then x else s.[j])
-    let update_array  a i x = List.init   (List.length a)   (fun j -> if j = i then x else List.nth a j)
+    let update_array  a i x = list_init   (List.length a)   (fun j -> if j = i then x else List.nth a j)
 
   end
        
