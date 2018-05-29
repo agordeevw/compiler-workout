@@ -7,6 +7,13 @@ open GT
 open Ostap
 open Combinators
 
+let rec list_init_helper i acc len f = 
+  if i < len
+  then list_init_helper (i+1) (acc @ [f i]) len f
+  else acc
+
+let list_init len f = list_init_helper 0 [] len f
+
 (* Values *)
 module Value =
   struct
@@ -35,7 +42,7 @@ module Value =
     | _ -> failwith "symbolic expression expected"
 
     let update_string s i x = String.init (String.length s) (fun j -> if j = i then x else s.[j])
-    let update_array  a i x = List.init   (List.length a)   (fun j -> if j = i then x else List.nth a j)
+    let update_array  a i x = list_init   (List.length a)   (fun j -> if j = i then x else List.nth a j)
 
   end
        
@@ -185,7 +192,32 @@ module Expr =
       | "!!" -> fun x y -> bti (itb x || itb y)
       | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
     
-    let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
+    let rec eval env ((st, i, o, r) as conf) = function
+    | Const c -> 
+      (st, i, o, Some (Value.of_int c))
+    | Array xs -> 
+      let st', i', o', args = eval_list env conf xs
+      in env#definition env ".array" args (st', i', o', None)
+    | Sexp (s, xs) ->
+      let st', i', o', args = eval_list env conf xs in
+      (st', i', o', Some (Value.sexp s args))
+    | String s -> 
+      (st, i, o, Some (Value.of_string s))
+    | Var v -> 
+      (st, i, o, Some (State.eval st v))
+    | Binop (op, x, y) ->
+      let (_, _, _, Some x') as conf' = eval env conf x in
+      let (st', i', o', Some y') = eval env conf' y in
+      (st', i', o', Some (Value.of_int (to_func op (Value.to_int x') (Value.to_int y'))))
+    | Elem (b, j) ->
+      let (st', i', o', args) = eval_list env conf [b; j]
+      in env#definition env ".elem" args (st', i', o', None)
+    | Length l -> 
+      let (st', i', o', Some r) = eval env conf l
+      in env#definition env ".length" [r] (st', i', o', None)
+    | Call (f, xs) ->
+      let (st', i', o', args) = eval_list env conf xs
+      in env#definition env f args (st', i', o', None)
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
         List.fold_left
@@ -203,8 +235,50 @@ module Expr =
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string                                                                                                                  
     *)
-    ostap (                                      
-      parse: empty {failwith "Not implemented"}
+    ostap (
+      parse:
+      !(Ostap.Util.expr 
+        (fun x -> x)
+        (
+          Array.map (
+            fun (a, s) -> a, 
+            List.map (
+              fun s -> ostap(- $(s)), 
+              (fun x y -> Binop (s, x, y))
+            ) s
+          )
+          [|
+            `Lefta, ["!!"];
+            `Lefta, ["&&"];
+            `Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+            `Lefta, ["+" ; "-"];
+            `Lefta, ["*" ; "/"; "%"];
+          |] 
+        )
+       primary);
+
+      primary:
+        v:primary' "." %"length" {Length v}
+        | primary' ;
+      
+      primary':
+        v:core k:(-"[" parse -"]")*
+        {List.fold_left (fun v' k' -> Elem (v', k')) v k }
+      | core ;
+
+      core:
+        call
+      | n:DECIMAL {Const n}
+      | x:IDENT   {Var x}
+      | c:CHAR    {Const (Char.code c)}
+      | s:STRING  {String (String.sub s 1 @@ String.length s - 2)}
+      | "`" s:IDENT "(" l:!(Util.list parse) ")" {Sexp (s, l)}
+      | "`" s:IDENT                              {Sexp (s, [])}
+      | "[" a:!(Util.list parse) "]" {Array a}
+      | -"(" parse -")";
+
+      call: x:IDENT "(" params:!(Ostap.Util.listBy)[ostap (",")][parse]? ")" 
+        {Call (x, match params with Some s -> s | None -> [])}
     )
     
   end
@@ -226,7 +300,11 @@ module Stmt =
 
         (* Pattern parser *)                                 
         ostap (
-          parse: empty {failwith "Not implemented"}
+          parse:
+            %"_" {Wildcard}
+          | "`" s:IDENT "(" l:!(Util.list parse) ")" {Sexp (s, l)}
+          | "`" s:IDENT {Sexp (s, [])}
+          | s:IDENT {Ident s}
         )
         
         let vars p =
@@ -266,11 +344,93 @@ module Stmt =
       in
       State.update x (match is with [] -> v | _ -> update (State.eval st x) v is) st
 
-    let rec eval env ((st, i, o, r) as conf) k stmt = failwith "Not implemented"
+    let rec eval env ((st, i, o, r) as conf) k = 
+      let merge s1 s2 = match s2 with Skip -> s1 | _ -> Seq (s1, s2) in
+      function
+      | Assign (x, es, e) -> 
+        let (st', i', o', args) = Expr.eval_list env conf es in
+        let (st'', i'', o'', Some v) = Expr.eval env (st', i', o', None) e in
+        eval env (update st'' x v args, i'', o'', None) Skip k
+      | Seq (s1, s2) ->
+        eval env conf (merge s2 k) s1
+      | Skip -> 
+        (match k with Skip -> conf | _ -> eval env conf Skip k)
+      | If (e, ts, fs) ->
+        let (st', i', o', Some v) = Expr.eval env conf e in
+        eval env (st', i', o', None) k (if Value.to_int v <> 0 then ts else fs)
+      | While (e, s)      ->
+        eval env conf k (If (e, Seq(s, While(e, s)), Skip))
+      | Repeat (s, e)     ->
+        eval env conf k (Seq (s, If (e, Skip, Repeat (s, e))))
+      | Case (e, pl) ->
+        let (st', i', o', Some v) = Expr.eval env conf e in
+        let rec isMatching = function
+        | (Pattern.Wildcard, _) -> true
+        | (Pattern.Ident _,  _) -> true
+        | (Pattern.Sexp(s, ps), Value.Sexp(s', ps')) when s = s' -> 
+          List.length ps = List.length ps'
+          && List.fold_left (fun acc p -> acc && isMatching p) true @@ List.combine ps ps'
+        | _ -> false
+        in
+        let rec findMatch = function
+        | (p, s)::cases -> if isMatching (p, v) then Some(p, s) else findMatch cases
+        | [] -> None
+        in
+        let rec assign state = function
+        | (Pattern.Ident x, v) -> State.bind x v state
+        | (Pattern.Sexp (_, ps), Value.Sexp(_, ps')) -> List.fold_left assign state @@ List.combine ps ps'
+        | _ -> state
+        in 
+        (match findMatch pl with
+        | None -> eval env (st', i', o', None) Skip k
+        | Some (p, s) ->
+          let st'' = assign State.undefined (p, v) in
+          eval env (State.push st' st'' (Pattern.vars p), i', o', None) k s)
+      | Return opte       ->
+        (match opte with Some e -> Expr.eval env conf e | None -> conf)
+      | Call (name, args) ->
+        eval env (Expr.eval env conf (Expr.Call (name, args))) Skip k
+      | Leave ->
+        eval env (State.drop st, i, o, None) Skip k
                                                         
     (* Statement parser *)
+    let nested_elifs elifs els =
+      let last = 
+        match els with
+        | Some s -> s
+        | None   -> Skip
+      in List.fold_right (fun (c, s) ss -> If (c, s, ss)) elifs last
+
     ostap (
-      parse: empty {failwith "Not implemented"}
+      parse:
+        s:stmt ";" ss:parse {Seq (s, ss)}
+      | stmt;
+
+      branch: p:!(Pattern.parse) "->" s:parse {p, Seq(s, Leave)};
+
+      stmt:
+        c:!(Expr.call)                   {match c with Expr.Call(f, args) -> Call(f, args)}
+      | x:IDENT 
+        ks:(-"[" !(Expr.parse) -"]")*
+        ":=" e:!(Expr.parse)             {Assign (x, ks, e)}
+      | %"skip"                          {Skip}
+      | %"if" c:!(Expr.parse) 
+        %"then" ts:!(parse)
+        elifs:(%"elif" !(Expr.parse) %"then" parse)*
+        els:(%"else" parse)? 
+        %"fi"                            {If (c, ts, nested_elifs elifs els)}
+      | %"while" c:!(Expr.parse) 
+        %"do" s:parse %"od"              {While(c, s)}
+      | %"repeat" s:parse
+        %"until" c:!(Expr.parse)         {Repeat(s, c)}
+      | %"case" e:!(Expr.parse) %"of"
+        pl:!(Util.listBy (ostap ("|")) branch)
+        %"esac"                          {Case(e, pl)}
+      | %"for" is:parse 
+        "," c:!(Expr.parse)
+        "," ss:parse 
+        %"do" s:parse %"od"              {Seq(is, While(c, Seq(s, ss)))}
+      | %"return" e:!(Expr.parse)?       {Return e}
     )
       
   end
